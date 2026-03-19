@@ -1,0 +1,31 @@
+// User profile with a focus on 'Energy Level'
+model User {
+  id            String     @id @default(cuid())
+  name          String?
+  email         String     @unique
+  wins          MicroWin[]
+  sentSignals   Signal[]   @relation("SentSignals")
+  receivedSignals Signal[] @relation("ReceivedSignals")
+  lastActive    DateTime   @default(now())
+}
+
+// The "Did-Do" list item
+model MicroWin {
+  id          String   @id @default(cuid())
+  content     String   // e.g., "Drank water", "Made the bed"
+  energyCost  Int      @default(1) // 1 = Low, 5 = High
+  createdAt   DateTime @default(now())
+  userId      String
+  user        User     @relation(fields: [userId], references: id)
+}
+
+// The "Low-Energy Connection" pulse
+model Signal {
+  id          String   @id @default(cuid())
+  type        String   @default("thinking_of_you") 
+  senderId    String
+  sender      User     @relation("SentSignals", fields: [senderId], references: id)
+  receiverId  String
+  receiver    User     @relation("ReceivedSignals", fields: [receiverId], references: id)
+  createdAt   DateTime @default(now())
+}
