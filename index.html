@@ -329,6 +329,7 @@
       import * as THREE from "three";
 
       const STORAGE_KEY = "momentum-garden-v1";
+      const FLUTE_SAMPLES_ROOT = "/sounds/flutes";
       const DEFAULT_TRUTHS = [
         "Rejection is a feeling, not a fact.",
         "I can do one tiny move and that still counts.",
@@ -337,6 +338,156 @@
       ];
 
       const state = loadState();
+
+      class BilateralFluteProvider {
+        constructor({ rootPath, panHz, getAudioContext }) {
+          this.rootPath = rootPath;
+          this.panHz = panHz;
+          this.getAudioContext = getAudioContext;
+          this.sampleUrls = [];
+          this.sampleUrlsPromise = null;
+          this.bufferCache = new Map();
+          this.lastSampleUrl = null;
+        }
+
+        async ensureSampleUrls() {
+          if (this.sampleUrls.length) return this.sampleUrls;
+          if (!this.sampleUrlsPromise) {
+            this.sampleUrlsPromise = this.discoverSampleUrls().then((urls) => {
+              this.sampleUrls = urls;
+              return urls;
+            });
+          }
+          return this.sampleUrlsPromise;
+        }
+
+        async discoverSampleUrls() {
+          const fromManifest = await this.readManifestSamples();
+          if (fromManifest.length) return fromManifest;
+          return this.readDirectoryListingSamples();
+        }
+
+        async readManifestSamples() {
+          try {
+            const manifestResponse = await fetch(this.rootPath.replace(/\/+$/u, "") + "/manifest.json", {
+              cache: "no-store"
+            });
+            if (!manifestResponse.ok) return [];
+
+            const payload = await manifestResponse.json();
+            const values = Array.isArray(payload) ? payload : Array.isArray(payload?.samples) ? payload.samples : [];
+            return values
+              .filter((value) => typeof value === "string" && /\.wav$/iu.test(value))
+              .map((value) => this.toAbsoluteSampleUrl(value));
+          } catch {
+            return [];
+          }
+        }
+
+        async readDirectoryListingSamples() {
+          try {
+            const listingResponse = await fetch(this.rootPath.replace(/\/+$/u, "") + "/", { cache: "no-store" });
+            if (!listingResponse.ok) return [];
+            const html = await listingResponse.text();
+            const doc = new DOMParser().parseFromString(html, "text/html");
+            const links = [...doc.querySelectorAll("a[href]")].map((anchor) => anchor.getAttribute("href") || "");
+            const unique = new Set(
+              links
+                .filter((href) => /\.wav(?:$|\?)/iu.test(href))
+                .map((href) => this.toAbsoluteSampleUrl(href))
+            );
+            return [...unique];
+          } catch {
+            return [];
+          }
+        }
+
+        toAbsoluteSampleUrl(relativeOrAbsolute) {
+          const root = new URL(this.rootPath.replace(/\/?$/u, "/"), window.location.origin);
+          return new URL(relativeOrAbsolute, root).pathname;
+        }
+
+        pickNewSampleUrl() {
+          if (!this.sampleUrls.length) return null;
+          if (this.sampleUrls.length === 1) {
+            this.lastSampleUrl = this.sampleUrls[0];
+            return this.sampleUrls[0];
+          }
+
+          const candidates = this.sampleUrls.filter((url) => url !== this.lastSampleUrl);
+          const next = candidates[Math.floor(Math.random() * candidates.length)];
+          this.lastSampleUrl = next;
+          return next;
+        }
+
+        async loadBuffer(audioContext, sampleUrl) {
+          const cached = this.bufferCache.get(sampleUrl);
+          if (cached) return cached;
+
+          const bufferPromise = fetch(sampleUrl, { cache: "force-cache" })
+            .then((response) => {
+              if (!response.ok) throw new Error("Failed to fetch sample: " + sampleUrl);
+              return response.arrayBuffer();
+            })
+            .then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer));
+          this.bufferCache.set(sampleUrl, bufferPromise);
+          return bufferPromise;
+        }
+
+        async trigger() {
+          const audioContext = this.getAudioContext();
+          if (!audioContext) return { played: false, reason: "no-audio-context" };
+
+          const sampleUrls = await this.ensureSampleUrls();
+          if (!sampleUrls.length) return { played: false, reason: "no-samples" };
+
+          const sampleUrl = this.pickNewSampleUrl();
+          if (!sampleUrl) return { played: false, reason: "no-samples" };
+
+          const buffer = await this.loadBuffer(audioContext, sampleUrl);
+          const now = audioContext.currentTime;
+
+          const source = audioContext.createBufferSource();
+          source.buffer = buffer;
+
+          const sampleGain = audioContext.createGain();
+          sampleGain.gain.setValueAtTime(0.8, now);
+
+          const panner = audioContext.createStereoPanner ? audioContext.createStereoPanner() : null;
+          source.connect(sampleGain);
+          if (panner) {
+            sampleGain.connect(panner).connect(audioContext.destination);
+          } else {
+            sampleGain.connect(audioContext.destination);
+          }
+
+          let panLfo = null;
+          let panDepth = null;
+          if (panner) {
+            panLfo = audioContext.createOscillator();
+            panDepth = audioContext.createGain();
+            panLfo.type = "sine";
+            panLfo.frequency.setValueAtTime(this.panHz, now);
+            panDepth.gain.setValueAtTime(1, now);
+            panLfo.connect(panDepth).connect(panner.pan);
+            panLfo.start(now);
+          }
+
+          source.start(now);
+          source.onended = () => {
+            source.disconnect();
+            sampleGain.disconnect();
+            if (panner) panner.disconnect();
+            if (panLfo) {
+              panLfo.stop();
+              panLfo.disconnect();
+            }
+            if (panDepth) panDepth.disconnect();
+          };
+
+          return { played: true, sampleUrl };
+        }
+      }
 
       // -----------------------------
       // 1) Anchor breathing reset
@@ -582,6 +733,7 @@
       let vesselAnimationId = null;
       let vesselAudio = null;
       let vesselNoiseBuffer = null;
+      let bilateralFluteProvider = null;
       let lastClinkMs = 0;
 
       const vessel = {
@@ -594,11 +746,12 @@
         ensureVesselAudio();
         if (!vesselScene) return;
         spawnShard();
+        void triggerFluteExplosion();
         state.vessel.totalDrops += 1;
         state.vessel.lastDropAt = new Date().toISOString();
         saveState();
         renderVesselStats();
-        vesselStatus.textContent = "Shard dropped. Listen for impact clinks.";
+        vesselStatus.textContent = "Shard dropped. Listen for impact clinks and flute sweep.";
       });
 
       resetVesselBtn.addEventListener("click", () => {
@@ -850,6 +1003,26 @@
         }
         if (vesselAudio.state === "suspended") {
           vesselAudio.resume();
+        }
+        if (!bilateralFluteProvider) {
+          bilateralFluteProvider = new BilateralFluteProvider({
+            rootPath: FLUTE_SAMPLES_ROOT,
+            panHz: 0.5,
+            getAudioContext: () => vesselAudio
+          });
+          void bilateralFluteProvider.ensureSampleUrls();
+        }
+      }
+
+      async function triggerFluteExplosion() {
+        if (!bilateralFluteProvider) return;
+        try {
+          const result = await bilateralFluteProvider.trigger();
+          if (!result.played && result.reason === "no-samples") {
+            vesselStatus.textContent = "No flute .wav files found in /sounds/flutes.";
+          }
+        } catch {
+          vesselStatus.textContent = "Flute playback failed. Check /sounds/flutes .wav files.";
         }
       }
 
