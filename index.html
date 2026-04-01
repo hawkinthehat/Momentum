@@ -1,31 +1,573 @@
-// User profile with a focus on 'Energy Level'
-model User {
-  id            String     @id @default(cuid())
-  name          String?
-  email         String     @unique
-  wins          MicroWin[]
-  sentSignals   Signal[]   @relation("SentSignals")
-  receivedSignals Signal[] @relation("ReceivedSignals")
-  lastActive    DateTime   @default(now())
-}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Momentum Garden</title>
+    <style>
+      :root {
+        --bg: #0d1321;
+        --panel: #1d2d44;
+        --panel-soft: #22385b;
+        --text: #f0ebd8;
+        --muted: #c3bdd0;
+        --accent: #89c2d9;
+        --ok: #85dcb8;
+        --warning: #ffd166;
+        --danger: #ef476f;
+      }
 
-// The "Did-Do" list item
-model MicroWin {
-  id          String   @id @default(cuid())
-  content     String   // e.g., "Drank water", "Made the bed"
-  energyCost  Int      @default(1) // 1 = Low, 5 = High
-  createdAt   DateTime @default(now())
-  userId      String
-  user        User     @relation(fields: [userId], references: id)
-}
+      * {
+        box-sizing: border-box;
+      }
 
-// The "Low-Energy Connection" pulse
-model Signal {
-  id          String   @id @default(cuid())
-  type        String   @default("thinking_of_you") 
-  senderId    String
-  sender      User     @relation("SentSignals", fields: [senderId], references: id)
-  receiverId  String
-  receiver    User     @relation("ReceivedSignals", fields: [receiverId], references: id)
-  createdAt   DateTime @default(now())
-}
+      body {
+        margin: 0;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        background: linear-gradient(160deg, #0d1321, #1d2d44 40%, #3e5c76);
+        color: var(--text);
+        min-height: 100vh;
+      }
+
+      .app {
+        width: min(980px, 100%);
+        margin: 0 auto;
+        padding: 1.25rem;
+      }
+
+      header {
+        margin-bottom: 1rem;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.8rem, 2.8vw, 2.5rem);
+      }
+
+      .subtitle {
+        margin-top: 0.35rem;
+        color: var(--muted);
+      }
+
+      .grid {
+        display: grid;
+        gap: 1rem;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      }
+
+      .card {
+        background: rgba(13, 19, 33, 0.72);
+        border: 1px solid rgba(240, 235, 216, 0.12);
+        border-radius: 14px;
+        padding: 1rem;
+        backdrop-filter: blur(8px);
+      }
+
+      .card h2 {
+        margin-top: 0;
+        font-size: 1.05rem;
+      }
+
+      .anchor-wrap {
+        display: grid;
+        place-items: center;
+        gap: 0.75rem;
+      }
+
+      .anchor {
+        width: 120px;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: radial-gradient(circle at 30% 30%, #d6f5ff 0%, #89c2d9 35%, #3e5c76 100%);
+        box-shadow: 0 0 0 0 rgba(137, 194, 217, 0.45);
+      }
+
+      .anchor.breathing {
+        animation: breathe 8s infinite ease-in-out;
+      }
+
+      @keyframes breathe {
+        0%,
+        100% {
+          transform: scale(0.9);
+          box-shadow: 0 0 0 0 rgba(137, 194, 217, 0.45);
+        }
+        50% {
+          transform: scale(1.2);
+          box-shadow: 0 0 0 28px rgba(137, 194, 217, 0);
+        }
+      }
+
+      form {
+        display: grid;
+        gap: 0.55rem;
+      }
+
+      input,
+      select,
+      button,
+      textarea {
+        width: 100%;
+        border: 1px solid rgba(240, 235, 216, 0.14);
+        background: var(--panel-soft);
+        color: var(--text);
+        border-radius: 10px;
+        padding: 0.6rem 0.7rem;
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+        background: #2f5d8a;
+        border: none;
+        transition: transform 120ms ease, filter 120ms ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        filter: brightness(1.08);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      .row {
+        display: flex;
+        gap: 0.5rem;
+      }
+
+      .row > * {
+        flex: 1;
+      }
+
+      .small {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .list {
+        margin: 0.7rem 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 0.5rem;
+      }
+
+      .list li {
+        background: rgba(34, 56, 91, 0.75);
+        border: 1px solid rgba(240, 235, 216, 0.1);
+        border-radius: 10px;
+        padding: 0.55rem 0.65rem;
+      }
+
+      .steps li::marker {
+        color: var(--accent);
+      }
+
+      .steps {
+        margin-top: 0.8rem;
+        padding-left: 1.2rem;
+      }
+
+      .progress {
+        margin-top: 0.6rem;
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(240, 235, 216, 0.18);
+      }
+
+      .progress > span {
+        display: block;
+        height: 100%;
+        width: 0;
+        background: linear-gradient(90deg, #85dcb8, #89c2d9);
+      }
+
+      .pill {
+        display: inline-block;
+        margin-top: 0.55rem;
+        font-size: 0.82rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 999px;
+        background: rgba(133, 220, 184, 0.16);
+        color: #bff3dc;
+      }
+
+      footer {
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.85rem;
+        margin: 1rem 0 0.4rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <h1>Momentum Garden</h1>
+        <p class="subtitle">
+          A low-energy support loop: ground your nervous system, break tasks into tiny moves, stay connected, and log micro-wins.
+        </p>
+      </header>
+
+      <section class="grid">
+        <article class="card">
+          <h2>1) Floating Anchor (60-second reset)</h2>
+          <div class="anchor-wrap">
+            <div id="anchor" class="anchor" aria-hidden="true"></div>
+            <p id="anchorText" class="small">Tap start. Inhale as it grows, exhale as it shrinks.</p>
+            <div class="row">
+              <button id="startAnchor" type="button">Start reset</button>
+              <button id="stopAnchor" type="button">Stop</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <h2>2) Smasher (Atomic Sequencer)</h2>
+          <form id="taskForm">
+            <label for="taskInput" class="small">Big task</label>
+            <input id="taskInput" name="taskInput" placeholder="e.g., Wash the dog bowls" required />
+            <label for="energyInput" class="small">Energy level</label>
+            <select id="energyInput" name="energyInput">
+              <option value="1">1 - Barely moving</option>
+              <option value="2">2 - Low</option>
+              <option value="3" selected>3 - Medium</option>
+              <option value="4">4 - Okay</option>
+              <option value="5">5 - Strong</option>
+            </select>
+            <button type="submit">Generate 5 tiny moves</button>
+          </form>
+          <ol id="stepsList" class="steps"></ol>
+        </article>
+
+        <article class="card">
+          <h2>3) Worth Vault</h2>
+          <p id="truthDisplay" class="small">No truth selected yet.</p>
+          <div class="row">
+            <button id="newTruthBtn" type="button">Show a truth</button>
+            <button id="saveTruthBtn" type="button">Save custom</button>
+          </div>
+          <input id="truthInput" placeholder="Write a grounding truth..." />
+          <ul id="truthList" class="list"></ul>
+        </article>
+
+        <article class="card">
+          <h2>4) Presence Room (send a pulse)</h2>
+          <form id="signalForm">
+            <input id="friendInput" placeholder="Friend name" required />
+            <select id="signalType">
+              <option value="thinking_of_you">Thinking of you</option>
+              <option value="you_are_not_alone">You are not alone</option>
+              <option value="check_in_later">Check in later</option>
+            </select>
+            <button type="submit">Send pulse</button>
+          </form>
+          <ul id="signalList" class="list"></ul>
+        </article>
+
+        <article class="card">
+          <h2>5) Garden (micro-wins)</h2>
+          <form id="winForm">
+            <input id="winInput" placeholder="I drank water / fed the dogs / stepped outside..." required />
+            <select id="costInput">
+              <option value="1">Energy cost 1 (light)</option>
+              <option value="2">Energy cost 2</option>
+              <option value="3">Energy cost 3</option>
+              <option value="4">Energy cost 4</option>
+              <option value="5">Energy cost 5 (heavy)</option>
+            </select>
+            <button type="submit">Log micro-win</button>
+          </form>
+          <p id="gardenStage" class="pill">Stage: Seed</p>
+          <div class="progress"><span id="progressBar"></span></div>
+          <p id="gardenSummary" class="small"></p>
+          <ul id="winsList" class="list"></ul>
+        </article>
+      </section>
+      <footer>Everything saves in your browser (localStorage).</footer>
+    </main>
+
+    <script>
+      const STORAGE_KEY = "momentum-garden-v1";
+      const DEFAULT_TRUTHS = [
+        "Rejection is a feeling, not a fact.",
+        "I can do one tiny move and that still counts.",
+        "My worth does not depend on today's output.",
+        "Small care actions are real progress."
+      ];
+
+      const state = loadState();
+
+      // -----------------------------
+      // 1) Anchor breathing reset
+      // -----------------------------
+      const anchor = document.getElementById("anchor");
+      const anchorText = document.getElementById("anchorText");
+      const startAnchor = document.getElementById("startAnchor");
+      const stopAnchor = document.getElementById("stopAnchor");
+
+      let anchorTimer = null;
+      let anchorRemaining = 0;
+
+      startAnchor.addEventListener("click", () => {
+        clearAnchorTimer();
+        anchorRemaining = 60;
+        anchor.classList.add("breathing");
+        anchorText.textContent = "Breathe with the pulse... 60s";
+        anchorTimer = setInterval(() => {
+          anchorRemaining -= 1;
+          anchorText.textContent = "Breathe with the pulse... " + anchorRemaining + "s";
+          if (anchorRemaining <= 0) {
+            clearAnchorTimer();
+            anchorText.textContent = "Reset complete. Choose one tiny next move.";
+          }
+        }, 1000);
+      });
+
+      stopAnchor.addEventListener("click", () => {
+        clearAnchorTimer();
+        anchorText.textContent = "Paused. You can restart anytime.";
+      });
+
+      function clearAnchorTimer() {
+        if (anchorTimer) {
+          clearInterval(anchorTimer);
+          anchorTimer = null;
+        }
+        anchor.classList.remove("breathing");
+      }
+
+      // -----------------------------
+      // 2) Atomic sequencer
+      // -----------------------------
+      const taskForm = document.getElementById("taskForm");
+      const taskInput = document.getElementById("taskInput");
+      const energyInput = document.getElementById("energyInput");
+      const stepsList = document.getElementById("stepsList");
+
+      taskForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const task = taskInput.value.trim();
+        const energy = Number(energyInput.value);
+        if (!task) return;
+
+        const steps = generateAtomicSteps(task, energy);
+        renderSteps(steps);
+      });
+
+      function generateAtomicSteps(task, energy) {
+        const cleanedTask = task.replace(/[.!?]+$/u, "");
+        const action = cleanedTask.split(/\s+/u)[0] || "Do";
+        const object = cleanedTask.split(/\s+/u).slice(1).join(" ") || cleanedTask;
+        const ramp = Math.max(1, Math.min(5, energy));
+
+        const lowEnergyStep = ramp <= 2 ? "Sit or stand comfortably and take one slow breath." : "Take one slow breath and roll your shoulders.";
+        const chunkWindow = ramp <= 2 ? "90 seconds" : ramp <= 4 ? "3 minutes" : "5 minutes";
+
+        return [
+          lowEnergyStep,
+          "Touch the task: gather only one item needed for \"" + cleanedTask + "\".",
+          "Do the easiest visible move: \"" + action + " " + object + "\" for " + chunkWindow + ".",
+          "Pause and decide: repeat one more short round or stop with no guilt.",
+          "Log this as a micro-win, even if the task is not finished."
+        ];
+      }
+
+      function renderSteps(steps) {
+        stepsList.innerHTML = "";
+        steps.forEach((step) => {
+          const li = document.createElement("li");
+          li.textContent = step;
+          stepsList.appendChild(li);
+        });
+      }
+
+      // -----------------------------
+      // 3) Worth vault
+      // -----------------------------
+      const truthDisplay = document.getElementById("truthDisplay");
+      const truthInput = document.getElementById("truthInput");
+      const newTruthBtn = document.getElementById("newTruthBtn");
+      const saveTruthBtn = document.getElementById("saveTruthBtn");
+      const truthList = document.getElementById("truthList");
+
+      newTruthBtn.addEventListener("click", () => {
+        const truths = state.truths.length ? state.truths : DEFAULT_TRUTHS;
+        const index = Math.floor(Math.random() * truths.length);
+        truthDisplay.textContent = truths[index];
+      });
+
+      saveTruthBtn.addEventListener("click", () => {
+        const truth = truthInput.value.trim();
+        if (!truth) return;
+        state.truths.unshift(truth);
+        truthInput.value = "";
+        saveState();
+        renderTruths();
+      });
+
+      function renderTruths() {
+        truthList.innerHTML = "";
+        const truths = state.truths.length ? state.truths : DEFAULT_TRUTHS;
+        truths.slice(0, 8).forEach((truth) => {
+          const li = document.createElement("li");
+          li.textContent = truth;
+          truthList.appendChild(li);
+        });
+      }
+
+      // -----------------------------
+      // 4) Send pulse
+      // -----------------------------
+      const signalForm = document.getElementById("signalForm");
+      const friendInput = document.getElementById("friendInput");
+      const signalType = document.getElementById("signalType");
+      const signalList = document.getElementById("signalList");
+
+      signalForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const friend = friendInput.value.trim();
+        if (!friend) return;
+        state.signals.unshift({
+          id: crypto.randomUUID(),
+          friend,
+          type: signalType.value,
+          createdAt: new Date().toISOString()
+        });
+        friendInput.value = "";
+        saveState();
+        renderSignals();
+      });
+
+      function renderSignals() {
+        signalList.innerHTML = "";
+        state.signals.slice(0, 6).forEach((signal) => {
+          const li = document.createElement("li");
+          li.innerHTML =
+            "<strong>" +
+            escapeHtml(signal.friend) +
+            "</strong> - " +
+            toSignalCopy(signal.type) +
+            "<br /><span class='small'>" +
+            formatTime(signal.createdAt) +
+            "</span>";
+          signalList.appendChild(li);
+        });
+      }
+
+      function toSignalCopy(type) {
+        const map = {
+          thinking_of_you: "Thinking of you",
+          you_are_not_alone: "You are not alone",
+          check_in_later: "Check in later"
+        };
+        return map[type] || type;
+      }
+
+      // -----------------------------
+      // 5) Micro-wins garden
+      // -----------------------------
+      const winForm = document.getElementById("winForm");
+      const winInput = document.getElementById("winInput");
+      const costInput = document.getElementById("costInput");
+      const winsList = document.getElementById("winsList");
+      const gardenStage = document.getElementById("gardenStage");
+      const progressBar = document.getElementById("progressBar");
+      const gardenSummary = document.getElementById("gardenSummary");
+
+      winForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const content = winInput.value.trim();
+        const energyCost = Number(costInput.value);
+        if (!content) return;
+
+        state.wins.unshift({
+          id: crypto.randomUUID(),
+          content,
+          energyCost,
+          createdAt: new Date().toISOString()
+        });
+
+        winInput.value = "";
+        saveState();
+        renderGarden();
+      });
+
+      function renderGarden() {
+        winsList.innerHTML = "";
+        state.wins.slice(0, 7).forEach((win) => {
+          const li = document.createElement("li");
+          li.innerHTML =
+            "<strong>" +
+            escapeHtml(win.content) +
+            "</strong> - energy " +
+            win.energyCost +
+            "<br /><span class='small'>" +
+            formatTime(win.createdAt) +
+            "</span>";
+          winsList.appendChild(li);
+        });
+
+        const recentWins = state.wins.filter((win) => Date.now() - new Date(win.createdAt).getTime() <= 7 * 24 * 60 * 60 * 1000);
+        const points = recentWins.reduce((total, win) => total + Math.max(1, 6 - win.energyCost), 0);
+        const maxPoints = 30;
+        const clampedPercent = Math.min(100, Math.round((points / maxPoints) * 100));
+
+        progressBar.style.width = clampedPercent + "%";
+        const stage = getGardenStage(points);
+        gardenStage.textContent = "Stage: " + stage;
+        gardenSummary.textContent = recentWins.length + " wins this week - " + points + " growth points";
+      }
+
+      function getGardenStage(points) {
+        if (points >= 25) return "Wildflower";
+        if (points >= 18) return "Bloom";
+        if (points >= 11) return "Bud";
+        if (points >= 5) return "Sprout";
+        return "Seed";
+      }
+
+      // -----------------------------
+      // Persistence + helpers
+      // -----------------------------
+      function loadState() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          const parsed = raw ? JSON.parse(raw) : null;
+          return {
+            truths: parsed?.truths ?? [],
+            signals: parsed?.signals ?? [],
+            wins: parsed?.wins ?? []
+          };
+        } catch {
+          return { truths: [], signals: [], wins: [] };
+        }
+      }
+
+      function saveState() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      }
+
+      function formatTime(isoString) {
+        return new Date(isoString).toLocaleString();
+      }
+
+      function escapeHtml(value) {
+        return value
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll("\"", "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      renderTruths();
+      renderSignals();
+      renderGarden();
+    </script>
+  </body>
+</html>
