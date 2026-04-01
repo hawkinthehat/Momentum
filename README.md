@@ -12,9 +12,15 @@ Everything is stored in browser `localStorage`, so there is no backend required.
 
 ## Run locally
 
-This project is static HTML/CSS/JS.
+This project is static HTML/CSS/JS with a local Three.js dependency.
 
-Open `index.html` directly in a browser, or run a tiny local server:
+Install dependencies and run a tiny local server:
+
+```bash
+pnpm install
+```
+
+Then serve from the repo root:
 
 ```bash
 python3 -m http.server 5173
