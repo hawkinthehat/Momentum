@@ -1,31 +1,29 @@
-// User profile with a focus on 'Energy Level'
-model User {
-  id            String     @id @default(cuid())
-  name          String?
-  email         String     @unique
-  wins          MicroWin[]
-  sentSignals   Signal[]   @relation("SentSignals")
-  receivedSignals Signal[] @relation("ReceivedSignals")
-  lastActive    DateTime   @default(now())
-}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <title>Momentum</title>
 
-// The "Did-Do" list item
-model MicroWin {
-  id          String   @id @default(cuid())
-  content     String   // e.g., "Drank water", "Made the bed"
-  energyCost  Int      @default(1) // 1 = Low, 5 = High
-  createdAt   DateTime @default(now())
-  userId      String
-  user        User     @relation(fields: [userId], references: id)
-}
+    <!-- PWA -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#FDFCF8" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Momentum" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
 
-// The "Low-Energy Connection" pulse
-model Signal {
-  id          String   @id @default(cuid())
-  type        String   @default("thinking_of_you") 
-  senderId    String
-  sender      User     @relation("SentSignals", fields: [senderId], references: id)
-  receiverId  String
-  receiver    User     @relation("ReceivedSignals", fields: [receiverId], references: id)
-  createdAt   DateTime @default(now())
-}
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
