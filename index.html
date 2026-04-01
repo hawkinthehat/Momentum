@@ -196,6 +196,20 @@
         color: #bff3dc;
       }
 
+      .vessel-wrap {
+        display: grid;
+        gap: 0.65rem;
+      }
+
+      .vessel-canvas {
+        width: 100%;
+        height: 280px;
+        border-radius: 12px;
+        border: 1px solid rgba(240, 235, 216, 0.14);
+        background: radial-gradient(circle at 30% 20%, rgba(137, 194, 217, 0.25), rgba(29, 45, 68, 0.4));
+        overflow: hidden;
+      }
+
       footer {
         text-align: center;
         color: var(--muted);
@@ -287,11 +301,33 @@
           <p id="gardenSummary" class="small"></p>
           <ul id="winsList" class="list"></ul>
         </article>
+
+        <article class="card">
+          <h2>6) Vessel (local-first shard jar)</h2>
+          <div class="vessel-wrap">
+            <div id="vesselCanvas" class="vessel-canvas" role="img" aria-label="A glass jar where shards fall with physics"></div>
+            <div class="row">
+              <button id="dropShardBtn" type="button">Drop shard</button>
+              <button id="resetVesselBtn" type="button">Reset vessel</button>
+            </div>
+            <p id="vesselStatus" class="small">Drop a shard to hear the jar clink.</p>
+            <p id="vesselStats" class="small"></p>
+          </div>
+        </article>
       </section>
       <footer>Everything saves in your browser (localStorage).</footer>
     </main>
 
-    <script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./node_modules/three/build/three.module.js"
+        }
+      }
+    </script>
+    <script type="module">
+      import * as THREE from "three";
+
       const STORAGE_KEY = "momentum-garden-v1";
       const DEFAULT_TRUTHS = [
         "Rejection is a feeling, not a fact.",
@@ -532,6 +568,353 @@
       }
 
       // -----------------------------
+      // 6) Vessel shard jar (Three.js)
+      // -----------------------------
+      const dropShardBtn = document.getElementById("dropShardBtn");
+      const resetVesselBtn = document.getElementById("resetVesselBtn");
+      const vesselStatus = document.getElementById("vesselStatus");
+      const vesselStats = document.getElementById("vesselStats");
+      const vesselCanvas = document.getElementById("vesselCanvas");
+
+      let vesselRenderer = null;
+      let vesselScene = null;
+      let vesselCamera = null;
+      let vesselAnimationId = null;
+      let vesselAudio = null;
+      let vesselNoiseBuffer = null;
+      let lastClinkMs = 0;
+
+      const vessel = {
+        shards: [],
+        jarHeight: 2.58,
+        floorY: 0.06
+      };
+
+      dropShardBtn.addEventListener("click", () => {
+        ensureVesselAudio();
+        if (!vesselScene) return;
+        spawnShard();
+        state.vessel.totalDrops += 1;
+        state.vessel.lastDropAt = new Date().toISOString();
+        saveState();
+        renderVesselStats();
+        vesselStatus.textContent = "Shard dropped. Listen for impact clinks.";
+      });
+
+      resetVesselBtn.addEventListener("click", () => {
+        vessel.shards.forEach((shard) => vesselScene.remove(shard.mesh));
+        vessel.shards = [];
+        state.vessel.currentShards = 0;
+        saveState();
+        renderVesselStats();
+        vesselStatus.textContent = "Vessel cleared.";
+      });
+
+      function initVessel() {
+        if (!vesselCanvas) return;
+
+        try {
+          vesselRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        } catch {
+          vesselStatus.textContent = "WebGL unavailable in this browser.";
+          return;
+        }
+
+        vesselRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        vesselRenderer.setSize(vesselCanvas.clientWidth, vesselCanvas.clientHeight);
+        vesselCanvas.appendChild(vesselRenderer.domElement);
+
+        vesselScene = new THREE.Scene();
+        vesselCamera = new THREE.PerspectiveCamera(38, vesselCanvas.clientWidth / vesselCanvas.clientHeight, 0.1, 100);
+        vesselCamera.position.set(0, 1.85, 6);
+        vesselCamera.lookAt(0, 1.2, 0);
+
+        const ambient = new THREE.AmbientLight(0xcbe6ff, 0.75);
+        const keyLight = new THREE.DirectionalLight(0xffffff, 0.85);
+        keyLight.position.set(3, 5, 5);
+        const fillLight = new THREE.PointLight(0x88c5ff, 0.6, 12);
+        fillLight.position.set(-2.2, 1.6, -2.2);
+        vesselScene.add(ambient, keyLight, fillLight);
+
+        const base = new THREE.Mesh(
+          new THREE.CircleGeometry(2.45, 48),
+          new THREE.MeshStandardMaterial({
+            color: 0x2a3b52,
+            transparent: true,
+            opacity: 0.55,
+            roughness: 0.8,
+            metalness: 0.1
+          })
+        );
+        base.rotation.x = -Math.PI / 2;
+        base.position.y = -0.01;
+        vesselScene.add(base);
+
+        const jarMaterial = new THREE.MeshPhysicalMaterial({
+          color: 0xd6efff,
+          transparent: true,
+          opacity: 0.28,
+          roughness: 0.05,
+          metalness: 0.02,
+          transmission: 0.98,
+          thickness: 0.7,
+          ior: 1.45,
+          side: THREE.DoubleSide
+        });
+
+        const jarBody = new THREE.Mesh(new THREE.CylinderGeometry(1.02, 1.1, 2.56, 64, 1, true), jarMaterial);
+        jarBody.position.y = vessel.jarHeight / 2;
+        vesselScene.add(jarBody);
+
+        const jarBottom = new THREE.Mesh(
+          new THREE.CylinderGeometry(1.08, 1.08, 0.08, 64),
+          new THREE.MeshPhysicalMaterial({
+            color: 0xb8ddf3,
+            transparent: true,
+            opacity: 0.38,
+            roughness: 0.08,
+            transmission: 0.9,
+            thickness: 0.4
+          })
+        );
+        jarBottom.position.y = vessel.floorY / 2;
+        vesselScene.add(jarBottom);
+
+        const jarRim = new THREE.Mesh(
+          new THREE.TorusGeometry(0.99, 0.05, 20, 72),
+          new THREE.MeshPhysicalMaterial({
+            color: 0xe2f4ff,
+            transparent: true,
+            opacity: 0.5,
+            roughness: 0.12,
+            metalness: 0.05
+          })
+        );
+        jarRim.rotation.x = Math.PI / 2;
+        jarRim.position.y = 2.58;
+        vesselScene.add(jarRim);
+
+        window.addEventListener("resize", resizeVesselRenderer);
+        resizeVesselRenderer();
+        startVesselLoop();
+      }
+
+      function resizeVesselRenderer() {
+        if (!vesselRenderer || !vesselCamera || !vesselCanvas) return;
+        const width = vesselCanvas.clientWidth;
+        const height = vesselCanvas.clientHeight;
+        vesselRenderer.setSize(width, height);
+        vesselCamera.aspect = width / height;
+        vesselCamera.updateProjectionMatrix();
+      }
+
+      function startVesselLoop() {
+        let previous = performance.now();
+        const tick = (nowMs) => {
+          const dt = Math.min(0.032, (nowMs - previous) / 1000);
+          previous = nowMs;
+          simulateVessel(dt);
+          vesselRenderer.render(vesselScene, vesselCamera);
+          vesselAnimationId = requestAnimationFrame(tick);
+        };
+        vesselAnimationId = requestAnimationFrame(tick);
+      }
+
+      function spawnShard() {
+        const shard = createShard();
+        vessel.shards.push(shard);
+        vesselScene.add(shard.mesh);
+        state.vessel.currentShards = vessel.shards.length;
+      }
+
+      function createShard() {
+        const geometries = [
+          new THREE.TetrahedronGeometry(1),
+          new THREE.OctahedronGeometry(1),
+          new THREE.DodecahedronGeometry(0.92)
+        ];
+        const geometry = geometries[Math.floor(Math.random() * geometries.length)];
+        const size = 0.12 + Math.random() * 0.06;
+        const material = new THREE.MeshStandardMaterial({
+          color: new THREE.Color().setHSL(0.56 + Math.random() * 0.1, 0.72, 0.58),
+          roughness: 0.32,
+          metalness: 0.42
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.scale.setScalar(size);
+        mesh.position.set((Math.random() - 0.5) * 0.36, 2.95 + Math.random() * 0.22, (Math.random() - 0.5) * 0.36);
+
+        return {
+          mesh,
+          radius: size * 0.78,
+          velocity: new THREE.Vector3((Math.random() - 0.5) * 0.45, -0.15, (Math.random() - 0.5) * 0.45),
+          spin: new THREE.Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4),
+          stillFrames: 0
+        };
+      }
+
+      function simulateVessel(dt) {
+        if (!vessel.shards.length) return;
+        const gravity = -7.8;
+        const restitutionFloor = 0.34;
+        const restitutionWall = 0.42;
+
+        for (let i = 0; i < vessel.shards.length; i += 1) {
+          const shard = vessel.shards[i];
+          shard.velocity.y += gravity * dt;
+          shard.mesh.position.addScaledVector(shard.velocity, dt);
+          shard.mesh.rotation.x += shard.spin.x * dt;
+          shard.mesh.rotation.y += shard.spin.y * dt;
+          shard.mesh.rotation.z += shard.spin.z * dt;
+
+          const floorHit = vessel.floorY + shard.radius;
+          if (shard.mesh.position.y < floorHit && shard.velocity.y < 0) {
+            const impact = Math.abs(shard.velocity.y);
+            shard.mesh.position.y = floorHit;
+            shard.velocity.y = -shard.velocity.y * restitutionFloor;
+            shard.velocity.x *= 0.88;
+            shard.velocity.z *= 0.88;
+            maybePlayClink(impact);
+          }
+
+          const radial = Math.hypot(shard.mesh.position.x, shard.mesh.position.z);
+          const allowed = innerRadiusAt(shard.mesh.position.y) - shard.radius;
+          if (radial > allowed && radial > 0) {
+            const nx = shard.mesh.position.x / radial;
+            const nz = shard.mesh.position.z / radial;
+            const outwardSpeed = shard.velocity.x * nx + shard.velocity.z * nz;
+
+            shard.mesh.position.x = nx * allowed;
+            shard.mesh.position.z = nz * allowed;
+
+            if (outwardSpeed > 0) {
+              shard.velocity.x -= (1 + restitutionWall) * outwardSpeed * nx;
+              shard.velocity.z -= (1 + restitutionWall) * outwardSpeed * nz;
+              maybePlayClink(Math.abs(outwardSpeed) * 0.92);
+            }
+          }
+
+          shard.velocity.multiplyScalar(0.996);
+
+          if (shard.mesh.position.y <= floorHit + 0.001 && shard.velocity.lengthSq() < 0.008) {
+            shard.stillFrames += 1;
+            if (shard.stillFrames > 20) {
+              shard.velocity.set(0, 0, 0);
+              shard.spin.multiplyScalar(0.94);
+            }
+          } else {
+            shard.stillFrames = 0;
+          }
+        }
+
+        for (let i = 0; i < vessel.shards.length; i += 1) {
+          for (let j = i + 1; j < vessel.shards.length; j += 1) {
+            resolveShardCollision(vessel.shards[i], vessel.shards[j]);
+          }
+        }
+      }
+
+      function resolveShardCollision(a, b) {
+        const delta = new THREE.Vector3().subVectors(a.mesh.position, b.mesh.position);
+        const distance = delta.length();
+        const minDistance = a.radius + b.radius;
+        if (distance <= 0 || distance >= minDistance) return;
+
+        const normal = delta.multiplyScalar(1 / distance);
+        const overlap = minDistance - distance;
+        a.mesh.position.addScaledVector(normal, overlap * 0.5);
+        b.mesh.position.addScaledVector(normal, -overlap * 0.5);
+
+        const relative = new THREE.Vector3().subVectors(a.velocity, b.velocity);
+        const separationSpeed = relative.dot(normal);
+        if (separationSpeed >= 0) return;
+
+        const bounce = 0.46;
+        const impulse = ((1 + bounce) * -separationSpeed) / 2;
+        a.velocity.addScaledVector(normal, impulse);
+        b.velocity.addScaledVector(normal, -impulse);
+        maybePlayClink(Math.abs(separationSpeed) * 0.56);
+      }
+
+      function innerRadiusAt(y) {
+        if (y > 2.1) return 0.86;
+        if (y > 1.5) return 0.93;
+        return 0.98;
+      }
+
+      function ensureVesselAudio() {
+        if (!vesselAudio) {
+          const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+          if (!AudioContextCtor) return;
+          vesselAudio = new AudioContextCtor();
+        }
+        if (vesselAudio.state === "suspended") {
+          vesselAudio.resume();
+        }
+      }
+
+      function maybePlayClink(impactSpeed) {
+        if (!vesselAudio || impactSpeed < 0.45) return;
+        const now = performance.now();
+        if (now - lastClinkMs < 38) return;
+        lastClinkMs = now;
+        playClink(Math.min(1, impactSpeed / 5.2));
+      }
+
+      function playClink(intensity) {
+        if (!vesselAudio) return;
+        const now = vesselAudio.currentTime;
+        const output = vesselAudio.createGain();
+        output.gain.setValueAtTime(0.0001, now);
+        output.gain.exponentialRampToValueAtTime(0.08 + intensity * 0.12, now + 0.006);
+        output.gain.exponentialRampToValueAtTime(0.0001, now + 0.22 + intensity * 0.2);
+        output.connect(vesselAudio.destination);
+
+        const freqs = [760, 1240, 1930, 2710];
+        freqs.forEach((base, index) => {
+          const osc = vesselAudio.createOscillator();
+          const gain = vesselAudio.createGain();
+          const detune = (Math.random() - 0.5) * 24;
+          osc.type = index % 2 === 0 ? "triangle" : "sine";
+          osc.frequency.setValueAtTime(base + Math.random() * 32, now);
+          osc.detune.setValueAtTime(detune, now);
+          gain.gain.setValueAtTime(0.06 / (index + 1), now);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12 + index * 0.05);
+          osc.connect(gain).connect(output);
+          osc.start(now);
+          osc.stop(now + 0.28 + index * 0.06);
+        });
+
+        if (!vesselNoiseBuffer) {
+          vesselNoiseBuffer = vesselAudio.createBuffer(1, vesselAudio.sampleRate * 0.06, vesselAudio.sampleRate);
+          const channel = vesselNoiseBuffer.getChannelData(0);
+          for (let i = 0; i < channel.length; i += 1) {
+            channel[i] = (Math.random() * 2 - 1) * 0.35;
+          }
+        }
+
+        const noise = vesselAudio.createBufferSource();
+        noise.buffer = vesselNoiseBuffer;
+        const band = vesselAudio.createBiquadFilter();
+        band.type = "bandpass";
+        band.frequency.value = 3600 + Math.random() * 500;
+        band.Q.value = 2.4;
+        const noiseGain = vesselAudio.createGain();
+        noiseGain.gain.setValueAtTime(0.002 + intensity * 0.013, now);
+        noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.085);
+        noise.connect(band).connect(noiseGain).connect(output);
+        noise.start(now);
+        noise.stop(now + 0.09);
+      }
+
+      function renderVesselStats() {
+        const totalDrops = state.vessel.totalDrops;
+        const currentShards = state.vessel.currentShards;
+        const lastDrop = state.vessel.lastDropAt ? formatTime(state.vessel.lastDropAt) : "not yet";
+        vesselStats.textContent = "Total drops: " + totalDrops + " | Shards in jar: " + currentShards + " | Last drop: " + lastDrop;
+      }
+
+      // -----------------------------
       // Persistence + helpers
       // -----------------------------
       function loadState() {
@@ -541,10 +924,20 @@
           return {
             truths: parsed?.truths ?? [],
             signals: parsed?.signals ?? [],
-            wins: parsed?.wins ?? []
+            wins: parsed?.wins ?? [],
+            vessel: {
+              totalDrops: parsed?.vessel?.totalDrops ?? 0,
+              currentShards: parsed?.vessel?.currentShards ?? 0,
+              lastDropAt: parsed?.vessel?.lastDropAt ?? null
+            }
           };
         } catch {
-          return { truths: [], signals: [], wins: [] };
+          return {
+            truths: [],
+            signals: [],
+            wins: [],
+            vessel: { totalDrops: 0, currentShards: 0, lastDropAt: null }
+          };
         }
       }
 
@@ -568,6 +961,8 @@
       renderTruths();
       renderSignals();
       renderGarden();
+      renderVesselStats();
+      initVessel();
     </script>
   </body>
 </html>
