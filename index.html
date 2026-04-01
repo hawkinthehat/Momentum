@@ -303,15 +303,20 @@
         </article>
 
         <article class="card">
-          <h2>6) Vessel (local-first shard jar)</h2>
+          <h2>6) Jackpot Explosion (refraction glass shards)</h2>
           <div class="vessel-wrap">
-            <div id="vesselCanvas" class="vessel-canvas" role="img" aria-label="A glass jar where shards fall with physics"></div>
+            <div
+              id="jackpotCanvas"
+              class="vessel-canvas"
+              role="img"
+              aria-label="A jackpot explosion of glass shards rendered with refraction"
+            ></div>
             <div class="row">
-              <button id="dropShardBtn" type="button">Drop shard</button>
-              <button id="resetVesselBtn" type="button">Reset vessel</button>
+              <button id="triggerJackpotBtn" type="button">Trigger jackpot</button>
+              <button id="resetJackpotBtn" type="button">Reset explosion</button>
             </div>
-            <p id="vesselStatus" class="small">Drop a shard to hear the jar clink.</p>
-            <p id="vesselStats" class="small"></p>
+            <p id="jackpotStatus" class="small">Trigger jackpot to launch refractive glass shards.</p>
+            <p id="jackpotStats" class="small"></p>
           </div>
         </article>
       </section>
@@ -568,351 +573,540 @@
       }
 
       // -----------------------------
-      // 6) Vessel shard jar (Three.js)
+      // 6) Jackpot explosion (Three.js + custom refraction shader)
       // -----------------------------
-      const dropShardBtn = document.getElementById("dropShardBtn");
-      const resetVesselBtn = document.getElementById("resetVesselBtn");
-      const vesselStatus = document.getElementById("vesselStatus");
-      const vesselStats = document.getElementById("vesselStats");
-      const vesselCanvas = document.getElementById("vesselCanvas");
+      const triggerJackpotBtn = document.getElementById("triggerJackpotBtn");
+      const resetJackpotBtn = document.getElementById("resetJackpotBtn");
+      const jackpotStatus = document.getElementById("jackpotStatus");
+      const jackpotStats = document.getElementById("jackpotStats");
+      const jackpotCanvas = document.getElementById("jackpotCanvas");
 
-      let vesselRenderer = null;
-      let vesselScene = null;
-      let vesselCamera = null;
-      let vesselAnimationId = null;
-      let vesselAudio = null;
-      let vesselNoiseBuffer = null;
-      let lastClinkMs = 0;
+      class JackpotExplosion {
+        constructor({ canvasEl, statusEl, statsEl, persistedState }) {
+          this.canvasEl = canvasEl;
+          this.statusEl = statusEl;
+          this.statsEl = statsEl;
+          this.persistedState = persistedState;
 
-      const vessel = {
-        shards: [],
-        jarHeight: 2.58,
-        floorY: 0.06
-      };
+          this.renderer = null;
+          this.scene = null;
+          this.camera = null;
+          this.cubeCamera = null;
+          this.cubeRenderTarget = null;
+          this.animationId = null;
+          this.lastRefractionUpdateMs = 0;
 
-      dropShardBtn.addEventListener("click", () => {
-        ensureVesselAudio();
-        if (!vesselScene) return;
-        spawnShard();
-        state.vessel.totalDrops += 1;
-        state.vessel.lastDropAt = new Date().toISOString();
-        saveState();
-        renderVesselStats();
-        vesselStatus.textContent = "Shard dropped. Listen for impact clinks.";
-      });
+          this.audio = null;
+          this.noiseBuffer = null;
+          this.lastClinkMs = 0;
 
-      resetVesselBtn.addEventListener("click", () => {
-        vessel.shards.forEach((shard) => vesselScene.remove(shard.mesh));
-        vessel.shards = [];
-        state.vessel.currentShards = 0;
-        saveState();
-        renderVesselStats();
-        vesselStatus.textContent = "Vessel cleared.";
-      });
-
-      function initVessel() {
-        if (!vesselCanvas) return;
-
-        try {
-          vesselRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        } catch {
-          vesselStatus.textContent = "WebGL unavailable in this browser.";
-          return;
+          this.shards = [];
+          this.jarHeight = 2.58;
+          this.floorY = 0.06;
+          this.tmpVec3 = new THREE.Vector3();
         }
 
-        vesselRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        vesselRenderer.setSize(vesselCanvas.clientWidth, vesselCanvas.clientHeight);
-        vesselCanvas.appendChild(vesselRenderer.domElement);
+        init() {
+          if (!this.canvasEl) return;
 
-        vesselScene = new THREE.Scene();
-        vesselCamera = new THREE.PerspectiveCamera(38, vesselCanvas.clientWidth / vesselCanvas.clientHeight, 0.1, 100);
-        vesselCamera.position.set(0, 1.85, 6);
-        vesselCamera.lookAt(0, 1.2, 0);
-
-        const ambient = new THREE.AmbientLight(0xcbe6ff, 0.75);
-        const keyLight = new THREE.DirectionalLight(0xffffff, 0.85);
-        keyLight.position.set(3, 5, 5);
-        const fillLight = new THREE.PointLight(0x88c5ff, 0.6, 12);
-        fillLight.position.set(-2.2, 1.6, -2.2);
-        vesselScene.add(ambient, keyLight, fillLight);
-
-        const base = new THREE.Mesh(
-          new THREE.CircleGeometry(2.45, 48),
-          new THREE.MeshStandardMaterial({
-            color: 0x2a3b52,
-            transparent: true,
-            opacity: 0.55,
-            roughness: 0.8,
-            metalness: 0.1
-          })
-        );
-        base.rotation.x = -Math.PI / 2;
-        base.position.y = -0.01;
-        vesselScene.add(base);
-
-        const jarMaterial = new THREE.MeshPhysicalMaterial({
-          color: 0xd6efff,
-          transparent: true,
-          opacity: 0.28,
-          roughness: 0.05,
-          metalness: 0.02,
-          transmission: 0.98,
-          thickness: 0.7,
-          ior: 1.45,
-          side: THREE.DoubleSide
-        });
-
-        const jarBody = new THREE.Mesh(new THREE.CylinderGeometry(1.02, 1.1, 2.56, 64, 1, true), jarMaterial);
-        jarBody.position.y = vessel.jarHeight / 2;
-        vesselScene.add(jarBody);
-
-        const jarBottom = new THREE.Mesh(
-          new THREE.CylinderGeometry(1.08, 1.08, 0.08, 64),
-          new THREE.MeshPhysicalMaterial({
-            color: 0xb8ddf3,
-            transparent: true,
-            opacity: 0.38,
-            roughness: 0.08,
-            transmission: 0.9,
-            thickness: 0.4
-          })
-        );
-        jarBottom.position.y = vessel.floorY / 2;
-        vesselScene.add(jarBottom);
-
-        const jarRim = new THREE.Mesh(
-          new THREE.TorusGeometry(0.99, 0.05, 20, 72),
-          new THREE.MeshPhysicalMaterial({
-            color: 0xe2f4ff,
-            transparent: true,
-            opacity: 0.5,
-            roughness: 0.12,
-            metalness: 0.05
-          })
-        );
-        jarRim.rotation.x = Math.PI / 2;
-        jarRim.position.y = 2.58;
-        vesselScene.add(jarRim);
-
-        window.addEventListener("resize", resizeVesselRenderer);
-        resizeVesselRenderer();
-        startVesselLoop();
-      }
-
-      function resizeVesselRenderer() {
-        if (!vesselRenderer || !vesselCamera || !vesselCanvas) return;
-        const width = vesselCanvas.clientWidth;
-        const height = vesselCanvas.clientHeight;
-        vesselRenderer.setSize(width, height);
-        vesselCamera.aspect = width / height;
-        vesselCamera.updateProjectionMatrix();
-      }
-
-      function startVesselLoop() {
-        let previous = performance.now();
-        const tick = (nowMs) => {
-          const dt = Math.min(0.032, (nowMs - previous) / 1000);
-          previous = nowMs;
-          simulateVessel(dt);
-          vesselRenderer.render(vesselScene, vesselCamera);
-          vesselAnimationId = requestAnimationFrame(tick);
-        };
-        vesselAnimationId = requestAnimationFrame(tick);
-      }
-
-      function spawnShard() {
-        const shard = createShard();
-        vessel.shards.push(shard);
-        vesselScene.add(shard.mesh);
-        state.vessel.currentShards = vessel.shards.length;
-      }
-
-      function createShard() {
-        const geometries = [
-          new THREE.TetrahedronGeometry(1),
-          new THREE.OctahedronGeometry(1),
-          new THREE.DodecahedronGeometry(0.92)
-        ];
-        const geometry = geometries[Math.floor(Math.random() * geometries.length)];
-        const size = 0.12 + Math.random() * 0.06;
-        const material = new THREE.MeshStandardMaterial({
-          color: new THREE.Color().setHSL(0.56 + Math.random() * 0.1, 0.72, 0.58),
-          roughness: 0.32,
-          metalness: 0.42
-        });
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.scale.setScalar(size);
-        mesh.position.set((Math.random() - 0.5) * 0.36, 2.95 + Math.random() * 0.22, (Math.random() - 0.5) * 0.36);
-
-        return {
-          mesh,
-          radius: size * 0.78,
-          velocity: new THREE.Vector3((Math.random() - 0.5) * 0.45, -0.15, (Math.random() - 0.5) * 0.45),
-          spin: new THREE.Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4),
-          stillFrames: 0
-        };
-      }
-
-      function simulateVessel(dt) {
-        if (!vessel.shards.length) return;
-        const gravity = -7.8;
-        const restitutionFloor = 0.34;
-        const restitutionWall = 0.42;
-
-        for (let i = 0; i < vessel.shards.length; i += 1) {
-          const shard = vessel.shards[i];
-          shard.velocity.y += gravity * dt;
-          shard.mesh.position.addScaledVector(shard.velocity, dt);
-          shard.mesh.rotation.x += shard.spin.x * dt;
-          shard.mesh.rotation.y += shard.spin.y * dt;
-          shard.mesh.rotation.z += shard.spin.z * dt;
-
-          const floorHit = vessel.floorY + shard.radius;
-          if (shard.mesh.position.y < floorHit && shard.velocity.y < 0) {
-            const impact = Math.abs(shard.velocity.y);
-            shard.mesh.position.y = floorHit;
-            shard.velocity.y = -shard.velocity.y * restitutionFloor;
-            shard.velocity.x *= 0.88;
-            shard.velocity.z *= 0.88;
-            maybePlayClink(impact);
+          try {
+            this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+          } catch {
+            this.statusEl.textContent = "WebGL unavailable in this browser.";
+            return;
           }
 
-          const radial = Math.hypot(shard.mesh.position.x, shard.mesh.position.z);
-          const allowed = innerRadiusAt(shard.mesh.position.y) - shard.radius;
-          if (radial > allowed && radial > 0) {
-            const nx = shard.mesh.position.x / radial;
-            const nz = shard.mesh.position.z / radial;
-            const outwardSpeed = shard.velocity.x * nx + shard.velocity.z * nz;
+          this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+          this.renderer.setSize(this.canvasEl.clientWidth, this.canvasEl.clientHeight);
+          this.canvasEl.appendChild(this.renderer.domElement);
 
-            shard.mesh.position.x = nx * allowed;
-            shard.mesh.position.z = nz * allowed;
+          this.scene = new THREE.Scene();
+          this.camera = new THREE.PerspectiveCamera(38, this.canvasEl.clientWidth / this.canvasEl.clientHeight, 0.1, 100);
+          this.camera.position.set(0, 1.95, 5.9);
+          this.camera.lookAt(0, 1.25, 0);
 
-            if (outwardSpeed > 0) {
-              shard.velocity.x -= (1 + restitutionWall) * outwardSpeed * nx;
-              shard.velocity.z -= (1 + restitutionWall) * outwardSpeed * nz;
-              maybePlayClink(Math.abs(outwardSpeed) * 0.92);
+          this.cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
+            type: THREE.HalfFloatType,
+            generateMipmaps: true,
+            minFilter: THREE.LinearMipmapLinearFilter
+          });
+          this.cubeCamera = new THREE.CubeCamera(0.1, 60, this.cubeRenderTarget);
+          this.scene.add(this.cubeCamera);
+
+          this.setupEnvironment();
+
+          window.addEventListener("resize", () => this.resizeRenderer());
+          this.resizeRenderer();
+          this.startLoop();
+          this.renderStats();
+        }
+
+        setupEnvironment() {
+          const ambient = new THREE.AmbientLight(0xd2e7ff, 0.72);
+          const keyLight = new THREE.DirectionalLight(0xffffff, 0.94);
+          keyLight.position.set(3, 5, 5);
+          const fillLight = new THREE.PointLight(0x7bd0ff, 0.68, 16);
+          fillLight.position.set(-2.2, 1.8, -2.2);
+          this.scene.add(ambient, keyLight, fillLight);
+
+          const backdrop = new THREE.Mesh(
+            new THREE.SphereGeometry(14, 48, 24),
+            new THREE.MeshBasicMaterial({
+              color: 0x0e1c31,
+              side: THREE.BackSide
+            })
+          );
+          this.scene.add(backdrop);
+
+          const causticRings = new THREE.Group();
+          for (let i = 0; i < 18; i += 1) {
+            const hue = 0.53 + Math.random() * 0.15;
+            const tint = new THREE.Color().setHSL(hue, 0.86, 0.58);
+            const ring = new THREE.Mesh(
+              new THREE.TorusGeometry(2.1 + Math.random() * 2.8, 0.012 + Math.random() * 0.02, 10, 64),
+              new THREE.MeshStandardMaterial({
+                color: tint,
+                emissive: tint,
+                emissiveIntensity: 0.52,
+                roughness: 0.24,
+                metalness: 0.12
+              })
+            );
+            ring.position.set((Math.random() - 0.5) * 2.8, 0.45 + Math.random() * 2.5, (Math.random() - 0.5) * 2.8);
+            ring.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+            causticRings.add(ring);
+          }
+          this.scene.add(causticRings);
+
+          const base = new THREE.Mesh(
+            new THREE.CircleGeometry(2.5, 56),
+            new THREE.MeshStandardMaterial({
+              color: 0x21344f,
+              transparent: true,
+              opacity: 0.58,
+              roughness: 0.78,
+              metalness: 0.08
+            })
+          );
+          base.rotation.x = -Math.PI / 2;
+          base.position.y = -0.01;
+          this.scene.add(base);
+
+          const vesselGlass = new THREE.MeshPhysicalMaterial({
+            color: 0xd7f0ff,
+            transparent: true,
+            opacity: 0.25,
+            roughness: 0.04,
+            metalness: 0.03,
+            transmission: 0.98,
+            thickness: 0.72,
+            ior: 1.45,
+            side: THREE.DoubleSide
+          });
+
+          const chamberBody = new THREE.Mesh(new THREE.CylinderGeometry(1.03, 1.1, 2.56, 64, 1, true), vesselGlass);
+          chamberBody.position.y = this.jarHeight / 2;
+          this.scene.add(chamberBody);
+
+          const chamberBottom = new THREE.Mesh(
+            new THREE.CylinderGeometry(1.08, 1.08, 0.08, 64),
+            new THREE.MeshPhysicalMaterial({
+              color: 0xbfe6ff,
+              transparent: true,
+              opacity: 0.4,
+              roughness: 0.08,
+              transmission: 0.92,
+              thickness: 0.4
+            })
+          );
+          chamberBottom.position.y = this.floorY / 2;
+          this.scene.add(chamberBottom);
+
+          const chamberRim = new THREE.Mesh(
+            new THREE.TorusGeometry(0.995, 0.05, 20, 72),
+            new THREE.MeshPhysicalMaterial({
+              color: 0xe7f7ff,
+              transparent: true,
+              opacity: 0.55,
+              roughness: 0.12,
+              metalness: 0.05
+            })
+          );
+          chamberRim.rotation.x = Math.PI / 2;
+          chamberRim.position.y = 2.58;
+          this.scene.add(chamberRim);
+        }
+
+        createRefractionMaterial() {
+          const tint = new THREE.Color().setHSL(0.52 + Math.random() * 0.1, 0.55, 0.85);
+          return new THREE.ShaderMaterial({
+            uniforms: {
+              envMap: { value: this.cubeRenderTarget.texture },
+              eta: { value: 0.83 + Math.random() * 0.03 },
+              dispersion: { value: 0.018 + Math.random() * 0.02 },
+              tint: { value: tint },
+              opacity: { value: 0.5 + Math.random() * 0.14 }
+            },
+            vertexShader: `
+              varying vec3 vWorldPosition;
+              varying vec3 vWorldNormal;
+
+              void main() {
+                vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                vWorldPosition = worldPosition.xyz;
+                vWorldNormal = normalize(mat3(modelMatrix) * normal);
+                gl_Position = projectionMatrix * viewMatrix * worldPosition;
+              }
+            `,
+            fragmentShader: `
+              precision highp float;
+
+              uniform samplerCube envMap;
+              uniform float eta;
+              uniform float dispersion;
+              uniform vec3 tint;
+              uniform float opacity;
+
+              varying vec3 vWorldPosition;
+              varying vec3 vWorldNormal;
+
+              void main() {
+                vec3 n = normalize(vWorldNormal);
+                vec3 viewDir = normalize(vWorldPosition - cameraPosition);
+                float fresnel = pow(1.0 - max(dot(-viewDir, n), 0.0), 4.2);
+
+                vec3 refractR = refract(viewDir, n, eta - dispersion);
+                vec3 refractG = refract(viewDir, n, eta);
+                vec3 refractB = refract(viewDir, n, eta + dispersion);
+                vec3 reflectDir = reflect(viewDir, n);
+
+                vec3 refracted = vec3(
+                  textureCube(envMap, refractR).r,
+                  textureCube(envMap, refractG).g,
+                  textureCube(envMap, refractB).b
+                );
+                vec3 reflected = textureCube(envMap, reflectDir).rgb;
+
+                vec3 color = mix(refracted, reflected, 0.18 + fresnel * 0.72);
+                color = mix(color, color * tint, 0.3);
+                float alpha = clamp(opacity + fresnel * 0.3, 0.2, 0.95);
+                gl_FragColor = vec4(color, alpha);
+              }
+            `,
+            transparent: true,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          });
+        }
+
+        createShardGeometry() {
+          const geometry = new THREE.IcosahedronGeometry(1, 0);
+          const positions = geometry.attributes.position;
+          for (let i = 0; i < positions.count; i += 1) {
+            const x = positions.getX(i);
+            const y = positions.getY(i);
+            const z = positions.getZ(i);
+            positions.setXYZ(
+              i,
+              x * (0.58 + Math.random() * 0.7),
+              y * (0.42 + Math.random() * 1.35),
+              z * (0.52 + Math.random() * 0.78)
+            );
+          }
+          positions.needsUpdate = true;
+          geometry.computeVertexNormals();
+          return geometry;
+        }
+
+        triggerBurst() {
+          if (!this.scene) return;
+          const shardCount = 18 + Math.floor(Math.random() * 12);
+          for (let i = 0; i < shardCount; i += 1) {
+            this.spawnShard();
+          }
+          this.statusEl.textContent = "Jackpot triggered. Refractive shards are scattering.";
+          this.renderStats();
+        }
+
+        spawnShard() {
+          const geometry = this.createShardGeometry();
+          const material = this.createRefractionMaterial();
+          const mesh = new THREE.Mesh(geometry, material);
+          const size = 0.08 + Math.random() * 0.15;
+          mesh.scale.setScalar(size);
+          mesh.position.set((Math.random() - 0.5) * 0.14, 1.8 + Math.random() * 0.22, (Math.random() - 0.5) * 0.14);
+
+          const direction = new THREE.Vector3(Math.random() - 0.5, 0.22 + Math.random() * 0.9, Math.random() - 0.5).normalize();
+          const speed = 2.6 + Math.random() * 2.8;
+          const velocity = direction.multiplyScalar(speed);
+          velocity.y += 0.95 + Math.random() * 1.2;
+
+          const shard = {
+            mesh,
+            radius: size * 0.62,
+            velocity,
+            spin: new THREE.Vector3((Math.random() - 0.5) * 9, (Math.random() - 0.5) * 9, (Math.random() - 0.5) * 9),
+            age: 0,
+            life: 5.8 + Math.random() * 4.4
+          };
+
+          this.shards.push(shard);
+          this.scene.add(mesh);
+          this.persistedState.currentShards = this.shards.length;
+        }
+
+        reset() {
+          this.shards.forEach((shard) => {
+            this.scene.remove(shard.mesh);
+            shard.mesh.geometry.dispose();
+            shard.mesh.material.dispose();
+          });
+          this.shards = [];
+          this.persistedState.currentShards = 0;
+          this.statusEl.textContent = "Explosion reset.";
+          this.renderStats();
+        }
+
+        resizeRenderer() {
+          if (!this.renderer || !this.camera || !this.canvasEl) return;
+          const width = this.canvasEl.clientWidth;
+          const height = this.canvasEl.clientHeight;
+          this.renderer.setSize(width, height);
+          this.camera.aspect = width / height;
+          this.camera.updateProjectionMatrix();
+        }
+
+        startLoop() {
+          let previous = performance.now();
+          const tick = (nowMs) => {
+            const dt = Math.min(0.032, (nowMs - previous) / 1000);
+            previous = nowMs;
+
+            this.simulate(dt);
+            this.updateRefractionMap(nowMs);
+            this.renderer.render(this.scene, this.camera);
+            this.animationId = requestAnimationFrame(tick);
+          };
+          this.animationId = requestAnimationFrame(tick);
+        }
+
+        simulate(dt) {
+          if (!this.shards.length) return;
+          const gravity = -7.9;
+          const floorBounce = 0.38;
+          const wallBounce = 0.45;
+          const ceiling = 2.95;
+
+          for (let i = this.shards.length - 1; i >= 0; i -= 1) {
+            const shard = this.shards[i];
+            shard.age += dt;
+
+            shard.velocity.y += gravity * dt;
+            shard.mesh.position.addScaledVector(shard.velocity, dt);
+            shard.mesh.rotation.x += shard.spin.x * dt;
+            shard.mesh.rotation.y += shard.spin.y * dt;
+            shard.mesh.rotation.z += shard.spin.z * dt;
+
+            const floorHit = this.floorY + shard.radius;
+            if (shard.mesh.position.y < floorHit && shard.velocity.y < 0) {
+              const impact = Math.abs(shard.velocity.y);
+              shard.mesh.position.y = floorHit;
+              shard.velocity.y = -shard.velocity.y * floorBounce;
+              shard.velocity.x *= 0.88;
+              shard.velocity.z *= 0.88;
+              this.maybePlayClink(impact);
+            }
+
+            if (shard.mesh.position.y > ceiling && shard.velocity.y > 0) {
+              shard.mesh.position.y = ceiling;
+              shard.velocity.y *= -0.36;
+            }
+
+            const radial = Math.hypot(shard.mesh.position.x, shard.mesh.position.z);
+            const allowed = this.innerRadiusAt(shard.mesh.position.y) - shard.radius;
+            if (radial > allowed && radial > 0) {
+              const nx = shard.mesh.position.x / radial;
+              const nz = shard.mesh.position.z / radial;
+              const outwardSpeed = shard.velocity.x * nx + shard.velocity.z * nz;
+              shard.mesh.position.x = nx * allowed;
+              shard.mesh.position.z = nz * allowed;
+              if (outwardSpeed > 0) {
+                shard.velocity.x -= (1 + wallBounce) * outwardSpeed * nx;
+                shard.velocity.z -= (1 + wallBounce) * outwardSpeed * nz;
+                this.maybePlayClink(Math.abs(outwardSpeed) * 0.92);
+              }
+            }
+
+            shard.velocity.multiplyScalar(0.995);
+            shard.spin.multiplyScalar(0.998);
+
+            if (shard.age > shard.life) {
+              shard.mesh.material.uniforms.opacity.value *= 0.965;
+              if (shard.mesh.material.uniforms.opacity.value < 0.06) {
+                this.scene.remove(shard.mesh);
+                shard.mesh.geometry.dispose();
+                shard.mesh.material.dispose();
+                this.shards.splice(i, 1);
+                continue;
+              }
             }
           }
 
-          shard.velocity.multiplyScalar(0.996);
-
-          if (shard.mesh.position.y <= floorHit + 0.001 && shard.velocity.lengthSq() < 0.008) {
-            shard.stillFrames += 1;
-            if (shard.stillFrames > 20) {
-              shard.velocity.set(0, 0, 0);
-              shard.spin.multiplyScalar(0.94);
+          for (let i = 0; i < this.shards.length; i += 1) {
+            for (let j = i + 1; j < this.shards.length; j += 1) {
+              this.resolveCollision(this.shards[i], this.shards[j]);
             }
-          } else {
-            shard.stillFrames = 0;
+          }
+
+          this.persistedState.currentShards = this.shards.length;
+        }
+
+        resolveCollision(a, b) {
+          this.tmpVec3.subVectors(a.mesh.position, b.mesh.position);
+          const distance = this.tmpVec3.length();
+          const minDistance = a.radius + b.radius;
+          if (distance <= 0 || distance >= minDistance) return;
+
+          const normal = this.tmpVec3.multiplyScalar(1 / distance);
+          const overlap = minDistance - distance;
+          a.mesh.position.addScaledVector(normal, overlap * 0.5);
+          b.mesh.position.addScaledVector(normal, -overlap * 0.5);
+
+          const relative = new THREE.Vector3().subVectors(a.velocity, b.velocity);
+          const separationSpeed = relative.dot(normal);
+          if (separationSpeed >= 0) return;
+
+          const bounce = 0.52;
+          const impulse = ((1 + bounce) * -separationSpeed) / 2;
+          a.velocity.addScaledVector(normal, impulse);
+          b.velocity.addScaledVector(normal, -impulse);
+          this.maybePlayClink(Math.abs(separationSpeed) * 0.56);
+        }
+
+        innerRadiusAt(y) {
+          if (y > 2.1) return 0.86;
+          if (y > 1.5) return 0.93;
+          return 0.98;
+        }
+
+        ensureAudio() {
+          if (!this.audio) {
+            const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextCtor) return;
+            this.audio = new AudioContextCtor();
+          }
+          if (this.audio.state === "suspended") {
+            this.audio.resume();
           }
         }
 
-        for (let i = 0; i < vessel.shards.length; i += 1) {
-          for (let j = i + 1; j < vessel.shards.length; j += 1) {
-            resolveShardCollision(vessel.shards[i], vessel.shards[j]);
+        maybePlayClink(impactSpeed) {
+          if (!this.audio || impactSpeed < 0.45) return;
+          const now = performance.now();
+          if (now - this.lastClinkMs < 38) return;
+          this.lastClinkMs = now;
+          this.playClink(Math.min(1, impactSpeed / 5.2));
+        }
+
+        playClink(intensity) {
+          if (!this.audio) return;
+          const now = this.audio.currentTime;
+          const output = this.audio.createGain();
+          output.gain.setValueAtTime(0.0001, now);
+          output.gain.exponentialRampToValueAtTime(0.08 + intensity * 0.12, now + 0.006);
+          output.gain.exponentialRampToValueAtTime(0.0001, now + 0.22 + intensity * 0.2);
+          output.connect(this.audio.destination);
+
+          const freqs = [760, 1240, 1930, 2710];
+          freqs.forEach((base, index) => {
+            const osc = this.audio.createOscillator();
+            const gain = this.audio.createGain();
+            const detune = (Math.random() - 0.5) * 24;
+            osc.type = index % 2 === 0 ? "triangle" : "sine";
+            osc.frequency.setValueAtTime(base + Math.random() * 32, now);
+            osc.detune.setValueAtTime(detune, now);
+            gain.gain.setValueAtTime(0.06 / (index + 1), now);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12 + index * 0.05);
+            osc.connect(gain).connect(output);
+            osc.start(now);
+            osc.stop(now + 0.28 + index * 0.06);
+          });
+
+          if (!this.noiseBuffer) {
+            this.noiseBuffer = this.audio.createBuffer(1, this.audio.sampleRate * 0.06, this.audio.sampleRate);
+            const channel = this.noiseBuffer.getChannelData(0);
+            for (let i = 0; i < channel.length; i += 1) {
+              channel[i] = (Math.random() * 2 - 1) * 0.35;
+            }
           }
+
+          const noise = this.audio.createBufferSource();
+          noise.buffer = this.noiseBuffer;
+          const band = this.audio.createBiquadFilter();
+          band.type = "bandpass";
+          band.frequency.value = 3600 + Math.random() * 500;
+          band.Q.value = 2.4;
+          const noiseGain = this.audio.createGain();
+          noiseGain.gain.setValueAtTime(0.002 + intensity * 0.013, now);
+          noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.085);
+          noise.connect(band).connect(noiseGain).connect(output);
+          noise.start(now);
+          noise.stop(now + 0.09);
+        }
+
+        updateRefractionMap(nowMs) {
+          if (!this.cubeCamera || !this.renderer || !this.scene) return;
+          if (nowMs - this.lastRefractionUpdateMs < 45) return;
+          this.lastRefractionUpdateMs = nowMs;
+
+          const hidden = [];
+          this.shards.forEach((shard) => {
+            if (shard.mesh.visible) {
+              shard.mesh.visible = false;
+              hidden.push(shard.mesh);
+            }
+          });
+
+          this.cubeCamera.position.set(0, 1.4, 0);
+          this.cubeCamera.update(this.renderer, this.scene);
+
+          hidden.forEach((mesh) => {
+            mesh.visible = true;
+          });
+        }
+
+        renderStats() {
+          const totalBursts = this.persistedState.totalBursts;
+          const currentShards = this.persistedState.currentShards;
+          const lastBurst = this.persistedState.lastBurstAt ? formatTime(this.persistedState.lastBurstAt) : "not yet";
+          this.statsEl.textContent =
+            "Total jackpots: " + totalBursts + " | Active shards: " + currentShards + " | Last burst: " + lastBurst;
         }
       }
 
-      function resolveShardCollision(a, b) {
-        const delta = new THREE.Vector3().subVectors(a.mesh.position, b.mesh.position);
-        const distance = delta.length();
-        const minDistance = a.radius + b.radius;
-        if (distance <= 0 || distance >= minDistance) return;
+      const jackpotExplosion = new JackpotExplosion({
+        canvasEl: jackpotCanvas,
+        statusEl: jackpotStatus,
+        statsEl: jackpotStats,
+        persistedState: state.jackpot
+      });
 
-        const normal = delta.multiplyScalar(1 / distance);
-        const overlap = minDistance - distance;
-        a.mesh.position.addScaledVector(normal, overlap * 0.5);
-        b.mesh.position.addScaledVector(normal, -overlap * 0.5);
+      triggerJackpotBtn.addEventListener("click", () => {
+        jackpotExplosion.ensureAudio();
+        if (!jackpotExplosion.scene) return;
+        jackpotExplosion.triggerBurst();
+        state.jackpot.totalBursts += 1;
+        state.jackpot.lastBurstAt = new Date().toISOString();
+        state.jackpot.currentShards = jackpotExplosion.shards.length;
+        saveState();
+        jackpotExplosion.renderStats();
+      });
 
-        const relative = new THREE.Vector3().subVectors(a.velocity, b.velocity);
-        const separationSpeed = relative.dot(normal);
-        if (separationSpeed >= 0) return;
-
-        const bounce = 0.46;
-        const impulse = ((1 + bounce) * -separationSpeed) / 2;
-        a.velocity.addScaledVector(normal, impulse);
-        b.velocity.addScaledVector(normal, -impulse);
-        maybePlayClink(Math.abs(separationSpeed) * 0.56);
-      }
-
-      function innerRadiusAt(y) {
-        if (y > 2.1) return 0.86;
-        if (y > 1.5) return 0.93;
-        return 0.98;
-      }
-
-      function ensureVesselAudio() {
-        if (!vesselAudio) {
-          const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-          if (!AudioContextCtor) return;
-          vesselAudio = new AudioContextCtor();
-        }
-        if (vesselAudio.state === "suspended") {
-          vesselAudio.resume();
-        }
-      }
-
-      function maybePlayClink(impactSpeed) {
-        if (!vesselAudio || impactSpeed < 0.45) return;
-        const now = performance.now();
-        if (now - lastClinkMs < 38) return;
-        lastClinkMs = now;
-        playClink(Math.min(1, impactSpeed / 5.2));
-      }
-
-      function playClink(intensity) {
-        if (!vesselAudio) return;
-        const now = vesselAudio.currentTime;
-        const output = vesselAudio.createGain();
-        output.gain.setValueAtTime(0.0001, now);
-        output.gain.exponentialRampToValueAtTime(0.08 + intensity * 0.12, now + 0.006);
-        output.gain.exponentialRampToValueAtTime(0.0001, now + 0.22 + intensity * 0.2);
-        output.connect(vesselAudio.destination);
-
-        const freqs = [760, 1240, 1930, 2710];
-        freqs.forEach((base, index) => {
-          const osc = vesselAudio.createOscillator();
-          const gain = vesselAudio.createGain();
-          const detune = (Math.random() - 0.5) * 24;
-          osc.type = index % 2 === 0 ? "triangle" : "sine";
-          osc.frequency.setValueAtTime(base + Math.random() * 32, now);
-          osc.detune.setValueAtTime(detune, now);
-          gain.gain.setValueAtTime(0.06 / (index + 1), now);
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12 + index * 0.05);
-          osc.connect(gain).connect(output);
-          osc.start(now);
-          osc.stop(now + 0.28 + index * 0.06);
-        });
-
-        if (!vesselNoiseBuffer) {
-          vesselNoiseBuffer = vesselAudio.createBuffer(1, vesselAudio.sampleRate * 0.06, vesselAudio.sampleRate);
-          const channel = vesselNoiseBuffer.getChannelData(0);
-          for (let i = 0; i < channel.length; i += 1) {
-            channel[i] = (Math.random() * 2 - 1) * 0.35;
-          }
-        }
-
-        const noise = vesselAudio.createBufferSource();
-        noise.buffer = vesselNoiseBuffer;
-        const band = vesselAudio.createBiquadFilter();
-        band.type = "bandpass";
-        band.frequency.value = 3600 + Math.random() * 500;
-        band.Q.value = 2.4;
-        const noiseGain = vesselAudio.createGain();
-        noiseGain.gain.setValueAtTime(0.002 + intensity * 0.013, now);
-        noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.085);
-        noise.connect(band).connect(noiseGain).connect(output);
-        noise.start(now);
-        noise.stop(now + 0.09);
-      }
-
-      function renderVesselStats() {
-        const totalDrops = state.vessel.totalDrops;
-        const currentShards = state.vessel.currentShards;
-        const lastDrop = state.vessel.lastDropAt ? formatTime(state.vessel.lastDropAt) : "not yet";
-        vesselStats.textContent = "Total drops: " + totalDrops + " | Shards in jar: " + currentShards + " | Last drop: " + lastDrop;
-      }
+      resetJackpotBtn.addEventListener("click", () => {
+        jackpotExplosion.reset();
+        state.jackpot.currentShards = 0;
+        saveState();
+      });
 
       // -----------------------------
       // Persistence + helpers
@@ -925,10 +1119,10 @@
             truths: parsed?.truths ?? [],
             signals: parsed?.signals ?? [],
             wins: parsed?.wins ?? [],
-            vessel: {
-              totalDrops: parsed?.vessel?.totalDrops ?? 0,
-              currentShards: parsed?.vessel?.currentShards ?? 0,
-              lastDropAt: parsed?.vessel?.lastDropAt ?? null
+            jackpot: {
+              totalBursts: parsed?.jackpot?.totalBursts ?? parsed?.vessel?.totalDrops ?? 0,
+              currentShards: parsed?.jackpot?.currentShards ?? parsed?.vessel?.currentShards ?? 0,
+              lastBurstAt: parsed?.jackpot?.lastBurstAt ?? parsed?.vessel?.lastDropAt ?? null
             }
           };
         } catch {
@@ -936,7 +1130,7 @@
             truths: [],
             signals: [],
             wins: [],
-            vessel: { totalDrops: 0, currentShards: 0, lastDropAt: null }
+            jackpot: { totalBursts: 0, currentShards: 0, lastBurstAt: null }
           };
         }
       }
@@ -961,8 +1155,8 @@
       renderTruths();
       renderSignals();
       renderGarden();
-      renderVesselStats();
-      initVessel();
+      jackpotExplosion.renderStats();
+      jackpotExplosion.init();
     </script>
   </body>
 </html>
