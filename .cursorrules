@@ -1,0 +1,3 @@
+# Project Cursor Rules
+ Strictly use local-first architecture. All user data (wins, history) must be stored in IndexedDB or local storage. Use Zero-Knowledge encryption for any sync features. Favor framer-motion for physics-based glass animations.
+# Keep this file in the repository root so Cursor can discover it.
